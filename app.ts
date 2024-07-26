@@ -2,7 +2,15 @@
 import dotenv from "dotenv";
 import { expand } from "dotenv-expand";
 import express from "express";
-import { conversations, oauthAccess, postMessage, userInfo } from "./functions";
+import {
+  directChannel,
+  findOrCreateChannel,
+  findOrInviteUserToChannel,
+  isUserInChannel,
+  oauthAccess,
+  postMessage,
+  userInfo,
+} from "./functions";
 import { ISlackQuery } from "./interface";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -15,16 +23,19 @@ const port = process.env.PORT;
 
 // ─── Login ───────────────────────────────────────────────────────────────────
 app.get("/login", (req, res) => {
-  const userId = "1";
-  const scope = "users:read,groups:write,mpim:write,im:write,chat:write";
-  const url = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}&state=${userId}`;
+  const business_id = "101";
+  const store_id = "900";
+  const server_number = "0";
+  const scope =
+    "users:read,groups:write,groups:read,mpim:write,mpim:read,im:write,im:read,chat:write,channels:manage,channels:read";
+  const url = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}&state=${business_id},${store_id}${server_number}`;
   res.redirect(url);
 });
 
 // ─── Callback ────────────────────────────────────────────────────────────────
 app.get("/callback", async (req, res) => {
   const query = req.query as unknown as ISlackQuery;
-  const userDatabaseId = query.state;
+  const [business_id, store_id, server_number] = query.state.split(",");
 
   try {
     const authData = await oauthAccess(query.code);
@@ -39,18 +50,44 @@ app.get("/callback", async (req, res) => {
     if (!userInfoData?.ok)
       return res.status(500).send("Failed on getting user info");
 
-    // Open channel and find channel id
-    const conversationData = await conversations(
+    // Open direct channel and find channel id
+    const directChannelData = await directChannel(
       authData.authed_user.id,
       authData.access_token
     );
-    if (!conversationData)
-      return res.status(500).send("Cannot open conversation");
+    if (!directChannelData?.ok)
+      return res.status(500).send("Cannot open direct channel");
 
     // Send Message to channel id
     await postMessage(
-      conversationData?.channel.id,
+      directChannelData.channel.id,
       "this is my message",
+      authData.access_token
+    );
+
+    const foundedChannel = await findOrCreateChannel(
+      "fresh-private-channel",
+      authData.access_token
+    );
+    if (!foundedChannel?.id)
+      return res.status(500).send("Cannot find or create private channel");
+
+    const foundedUserData = await isUserInChannel(
+      foundedChannel.id,
+      authData.authed_user.id,
+      authData.access_token
+    );
+
+    await findOrInviteUserToChannel(
+      foundedChannel.id,
+      authData.authed_user.id,
+      authData.access_token
+    );
+
+    // Send message to private channel id
+    await postMessage(
+      foundedChannel.id,
+      "kasra's private message",
       authData.access_token
     );
 
@@ -61,9 +98,9 @@ app.get("/callback", async (req, res) => {
      * slack bot id: authData.bot_user_id>
      */
 
-    res.send(userInfoData);
+    res.send({ userInfoData, foundedUsersData: foundedUserData });
   } catch (error) {
-    res.status(500).send("Error during authentication");
+    res.status(500).send(error);
   }
 });
 
